@@ -1,27 +1,24 @@
 require("dotenv").config();
-
-// ✅ Fix listener warning
 require("events").EventEmitter.defaultMaxListeners = 50;
 
 const axios = require("axios");
 const mongoose = require("mongoose");
 const cron = require("node-cron");
+const express = require("express");
 
 const Order = require("./models/Order");
 const sendWhatsApp = require("./services/whatsapp");
 
+const app = express();
 const TOKEN = process.env.TOKEN;
 
-// ✅ MongoDB connect
+// ✅ MongoDB Connect
 mongoose.connect(process.env.MONGO_URI)
-.then(async () => {
-  console.log("✅ MongoDB Connected");
-
-})
-.catch(err => console.log(err));
+.then(() => console.log("✅ MongoDB Connected"))
+.catch(err => console.log("❌ DB Error:", err));
 
 
-// 🔥 CRON JOB (every 2 minutes for testing)
+// 🔥 CRON JOB (every 2 minutes)
 cron.schedule("*/2 * * * *", async () => {
   console.log("⏳ Checking orders...");
 
@@ -31,7 +28,7 @@ cron.schedule("*/2 * * * *", async () => {
       {
         headers: { Authorization: `Bearer ${TOKEN}` },
         params: {
-          filter: "state.name=NEW;state.name=ACCEPTED", // 🔥 ONLY REQUIRED ORDERS
+          filter: "state.name=ACCEPTED", // ✅ ONLY ACCEPTED (reduce Twilio usage)
           limit: 20,
           expand: "agent,state"
         }
@@ -40,7 +37,7 @@ cron.schedule("*/2 * * * *", async () => {
 
     let orders = res.data.rows;
 
-    // ✅ SORT BY CREATED DATE (latest first)
+    // ✅ Sort latest first
     orders.sort((a, b) => new Date(b.moment) - new Date(a.moment));
 
     for (let order of orders) {
@@ -48,7 +45,9 @@ cron.schedule("*/2 * * * *", async () => {
       console.log("🔍 Checking:", order.name, order.state?.name);
 
       const existing = await Order.findOne({ orderId: order.id });
-      const status = order.state?.name;
+
+      // ❌ Skip if already sent
+      if (existing) continue;
 
       // 🔹 Fetch positions (for quantity)
       const posRes = await axios.get(
@@ -63,46 +62,40 @@ cron.schedule("*/2 * * * *", async () => {
         totalQty += item.quantity;
       });
 
-      // 🆕 NEW ORDER OR ACCEPTED
-      if (!existing && (status === "NEW" || status === "ACCEPTED")) {
+      // 💾 Save to DB (avoid duplicate)
+      await Order.create({
+        orderId: order.id,
+        status: "ACCEPTED"
+      });
 
-        await Order.create({
-          orderId: order.id,
-          status
-        });
-
-        await sendWhatsApp(
-`🆕 New Order
-
-📦 Order: ${order.name}
-📍 Address: ${order.shipmentAddress || "No address"}
-📦 Qty: ${totalQty} pcs
-📌 Status: ${status}
-
-🔗 View Orders:
-https://sales-dashboard-o6n6.onrender.com/`
-        );
-      }
-
-      // 🔄 STATUS CHANGE → ACCEPTED
-      else if (existing && existing.status !== status && status === "ACCEPTED") {
-
-        existing.status = status;
-        await existing.save();
-
-        await sendWhatsApp(
+      // 📩 SEND WHATSAPP
+      await sendWhatsApp(
 `✅ Order Accepted
 
 📦 Order: ${order.name}
 📍 Address: ${order.shipmentAddress || "No address"}
-📦 Qty: ${totalQty} pcs`
-        );
-      }
+📦 Qty: ${totalQty} pcs
+
+🔗 View Orders:
+https://sales-dashboard-o6n6.onrender.com/`
+      );
     }
 
   } catch (err) {
     console.log("❌ Error:", err.response?.data || err.message);
   }
+});
+
+
+// 🌐 EXPRESS SERVER (REQUIRED FOR RENDER)
+const PORT = process.env.PORT || 3000;
+
+app.get("/", (req, res) => {
+  res.send("WhatsApp Bot Running ✅");
+});
+
+app.listen(PORT, () => {
+  console.log(`🌐 Server running on port ${PORT}`);
 });
 
 console.log("🚀 WhatsApp Bot Running...");
