@@ -116,12 +116,26 @@ const sendWhatsApp = require("./services/whatsapp");
 const app = express();
 const TOKEN = process.env.TOKEN;
 
-// MongoDB Connect
+// ✅ MongoDB Connect
 mongoose.connect(process.env.MONGO_URI)
-.then(() => console.log("✅ MongoDB Connected"))
-.catch(err => console.log("❌ DB Error:", err));
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch(err => console.log("❌ DB Error:", err));
 
-// 🔥 Check every 2 min
+// ✅ Status Checker Function
+function isValidStatus(status) {
+  if (!status) return false;
+
+  const s = status.toString().trim().toUpperCase();
+
+  return (
+    s === "NEW" ||
+    s === "ACCEPTED" ||
+    s.includes("NEW") ||
+    s.includes("ACCEPTED")
+  );
+}
+
+// 🔥 CRON JOB (Every 2 Minutes)
 cron.schedule("*/2 * * * *", async () => {
   console.log("⏳ Checking orders...");
 
@@ -139,29 +153,31 @@ cron.schedule("*/2 * * * *", async () => {
       }
     );
 
-    let orders = res.data.rows;
+    let orders = res.data.rows || [];
 
-    // Only NEW or ACCEPTED
+    // ✅ Keep only NEW / ACCEPTED
     orders = orders.filter(order =>
-      order.state?.name === "NEW" ||
-      order.state?.name === "ACCEPTED"
+      isValidStatus(order.state?.name)
     );
 
-    // latest first
+    // Latest First
     orders.sort((a, b) => new Date(b.moment) - new Date(a.moment));
 
     for (let order of orders) {
 
-      console.log("🔍 Checking:", order.name, order.state?.name);
+      const currentStatus = order.state?.name || "UNKNOWN";
 
+      console.log("🔍 Checking:", order.name, currentStatus);
+
+      // Prevent duplicate same status
       const existing = await Order.findOne({
         orderId: order.id,
-        status: order.state.name
+        status: currentStatus
       });
 
       if (existing) continue;
 
-      // Fetch quantity
+      // Fetch positions
       const posRes = await axios.get(
         `https://api.moysklad.ru/api/remap/1.2/entity/customerorder/${order.id}/positions`,
         {
@@ -173,19 +189,19 @@ cron.schedule("*/2 * * * *", async () => {
 
       let totalQty = 0;
 
-      posRes.data.rows.forEach(item => {
-        totalQty += item.quantity;
+      (posRes.data.rows || []).forEach(item => {
+        totalQty += Number(item.quantity || 0);
       });
 
-      // Save DB
+      // Save in MongoDB
       await Order.create({
         orderId: order.id,
-        status: order.state.name
+        status: currentStatus
       });
 
-      // WhatsApp Message
+      // Send WhatsApp
       await sendWhatsApp(
-`📢 Order ${order.state.name}
+`📢 Order ${currentStatus}
 
 📦 Order: ${order.name}
 👤 Customer: ${order.agent?.name || "No Name"}
@@ -202,7 +218,7 @@ https://sales-dashboard-o6n6.onrender.com/`
   }
 });
 
-// Render Server
+// 🌐 EXPRESS SERVER (Render)
 const PORT = process.env.PORT || 3000;
 
 app.get("/", (req, res) => {
