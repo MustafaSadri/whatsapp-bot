@@ -116,26 +116,15 @@ const sendWhatsApp = require("./services/whatsapp");
 const app = express();
 const TOKEN = process.env.TOKEN;
 
-// ✅ MongoDB Connect
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch(err => console.log("❌ DB Error:", err));
+.then(() => console.log("✅ MongoDB Connected"))
+.catch(err => console.log("❌ DB Error:", err));
 
-// ✅ Status Checker Function
-function isValidStatus(status) {
-  if (!status) return false;
-
-  const s = status.toString().trim().toUpperCase();
-
-  return (
-    s === "NEW" ||
-    s === "ACCEPTED" ||
-    s.includes("NEW") ||
-    s.includes("ACCEPTED")
-  );
+function isWantedStatus(status) {
+  const s = (status || "").toString().trim().toUpperCase();
+  return s === "NEW" || s === "ACCEPTED";
 }
 
-// 🔥 CRON JOB (Every 2 Minutes)
 cron.schedule("*/2 * * * *", async () => {
   console.log("⏳ Checking orders...");
 
@@ -143,9 +132,7 @@ cron.schedule("*/2 * * * *", async () => {
     const res = await axios.get(
       "https://api.moysklad.ru/api/remap/1.2/entity/customerorder",
       {
-        headers: {
-          Authorization: `Bearer ${TOKEN}`
-        },
+        headers: { Authorization: `Bearer ${TOKEN}` },
         params: {
           limit: 30,
           expand: "agent,state"
@@ -155,78 +142,80 @@ cron.schedule("*/2 * * * *", async () => {
 
     let orders = res.data.rows || [];
 
-    // ✅ Keep only NEW / ACCEPTED
-    orders = orders.filter(order =>
-      isValidStatus(order.state?.name)
-    );
-
-    // Latest First
-    orders.sort((a, b) => new Date(b.moment) - new Date(a.moment));
-
     for (let order of orders) {
+      try {
+        const status = order.state?.name || "";
 
-      const currentStatus = order.state?.name || "UNKNOWN";
+        console.log("🔍", order.name, status);
 
-      console.log("🔍 Checking:", order.name, currentStatus);
+        if (!isWantedStatus(status)) continue;
 
-      // Prevent duplicate same status
-      const existing = await Order.findOne({
-        orderId: order.id,
-        status: currentStatus
-      });
+        const existing = await Order.findOne({
+          orderId: order.id,
+          status: status
+        });
 
-      if (existing) continue;
+        if (existing) continue;
 
-      // Fetch positions
-      const posRes = await axios.get(
-        `https://api.moysklad.ru/api/remap/1.2/entity/customerorder/${order.id}/positions`,
-        {
-          headers: {
-            Authorization: `Bearer ${TOKEN}`
-          }
+        // fetch qty
+        let totalQty = 0;
+
+        try {
+          const posRes = await axios.get(
+            `https://api.moysklad.ru/api/remap/1.2/entity/customerorder/${order.id}/positions`,
+            {
+              headers: { Authorization: `Bearer ${TOKEN}` }
+            }
+          );
+
+          (posRes.data.rows || []).forEach(item => {
+            totalQty += Number(item.quantity || 0);
+          });
+
+        } catch (e) {
+          console.log("⚠ Qty fetch failed:", order.name);
         }
-      );
 
-      let totalQty = 0;
+        // SAVE FIRST
+        await Order.create({
+          orderId: order.id,
+          status: status
+        });
 
-      (posRes.data.rows || []).forEach(item => {
-        totalQty += Number(item.quantity || 0);
-      });
+        console.log("💾 Saved:", order.name, status);
 
-      // Save in MongoDB
-      await Order.create({
-        orderId: order.id,
-        status: currentStatus
-      });
-
-      // Send WhatsApp
-      await sendWhatsApp(
-`📢 Order ${currentStatus}
+        // SEND MESSAGE
+        try {
+          await sendWhatsApp(
+`📢 Order ${status}
 
 📦 Order: ${order.name}
 👤 Customer: ${order.agent?.name || "No Name"}
-📍 Address: ${order.shipmentAddress || "No address"}
-📦 Qty: ${totalQty} pcs
+📦 Qty: ${totalQty} pcs`
+          );
 
-🔗 View Orders:
-https://sales-dashboard-o6n6.onrender.com/`
-      );
+          console.log("📩 Sent:", order.name);
+
+        } catch (e) {
+          console.log("❌ WhatsApp failed:", order.name);
+        }
+
+      } catch (innerErr) {
+        console.log("❌ Order loop error:", innerErr.message);
+      }
     }
 
   } catch (err) {
-    console.log("❌ Error:", err.response?.data || err.message);
+    console.log("❌ Main Error:", err.response?.data || err.message);
   }
 });
 
-// 🌐 EXPRESS SERVER (Render)
 const PORT = process.env.PORT || 3000;
 
 app.get("/", (req, res) => {
-  res.send("WhatsApp Bot Running ✅");
+  res.send("Bot Running ✅");
 });
 
 app.listen(PORT, () => {
-  console.log(`🌐 Server running on port ${PORT}`);
+  console.log("🌐 Server running on port", PORT);
 });
-
-console.log("🚀 WhatsApp Bot Running...");
