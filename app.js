@@ -101,7 +101,6 @@
 // console.log("🚀 WhatsApp Bot Running...");
 
 
-
 require("dotenv").config();
 require("events").EventEmitter.defaultMaxListeners = 50;
 
@@ -116,15 +115,12 @@ const sendWhatsApp = require("./services/whatsapp");
 const app = express();
 const TOKEN = process.env.TOKEN;
 
+// ✅ MongoDB Connect
 mongoose.connect(process.env.MONGO_URI)
 .then(() => console.log("✅ MongoDB Connected"))
 .catch(err => console.log("❌ DB Error:", err));
 
-function isWantedStatus(status) {
-  const s = (status || "").toString().trim().toUpperCase();
-  return s === "NEW" || s === "ACCEPTED";
-}
-
+// 🔥 CRON JOB (every 2 minutes)
 cron.schedule("*/2 * * * *", async () => {
   console.log("⏳ Checking orders...");
 
@@ -134,7 +130,8 @@ cron.schedule("*/2 * * * *", async () => {
       {
         headers: { Authorization: `Bearer ${TOKEN}` },
         params: {
-          limit: 30,
+          filter: "state.name=NEW",
+          limit: 20,
           expand: "agent,state"
         }
       }
@@ -142,80 +139,69 @@ cron.schedule("*/2 * * * *", async () => {
 
     let orders = res.data.rows || [];
 
+    // ✅ Sort latest first
+    orders.sort((a, b) => new Date(b.moment) - new Date(a.moment));
+
     for (let order of orders) {
-      try {
-        const status = order.state?.name || "";
 
-        console.log("🔍", order.name, status);
+      console.log("🔍 Checking:", order.name, order.state?.name);
 
-        if (!isWantedStatus(status)) continue;
+      const existing = await Order.findOne({
+        orderId: order.id,
+        status: "NEW"
+      });
 
-        const existing = await Order.findOne({
-          orderId: order.id,
-          status: status
-        });
+      // ❌ Skip if already sent
+      if (existing) continue;
 
-        if (existing) continue;
-
-        // fetch qty
-        let totalQty = 0;
-
-        try {
-          const posRes = await axios.get(
-            `https://api.moysklad.ru/api/remap/1.2/entity/customerorder/${order.id}/positions`,
-            {
-              headers: { Authorization: `Bearer ${TOKEN}` }
-            }
-          );
-
-          (posRes.data.rows || []).forEach(item => {
-            totalQty += Number(item.quantity || 0);
-          });
-
-        } catch (e) {
-          console.log("⚠ Qty fetch failed:", order.name);
+      // 🔹 Fetch positions (for quantity)
+      const posRes = await axios.get(
+        `https://api.moysklad.ru/api/remap/1.2/entity/customerorder/${order.id}/positions`,
+        {
+          headers: { Authorization: `Bearer ${TOKEN}` }
         }
+      );
 
-        // SAVE FIRST
-        await Order.create({
-          orderId: order.id,
-          status: status
-        });
+      let totalQty = 0;
 
-        console.log("💾 Saved:", order.name, status);
+      (posRes.data.rows || []).forEach(item => {
+        totalQty += Number(item.quantity || 0);
+      });
 
-        // SEND MESSAGE
-        try {
-          await sendWhatsApp(
-`📢 Order ${status}
+      // 💾 Save to DB
+      await Order.create({
+        orderId: order.id,
+        status: "NEW"
+      });
+
+      // 📩 SEND WHATSAPP
+      await sendWhatsApp(
+`✅ Order Received
 
 📦 Order: ${order.name}
 👤 Customer: ${order.agent?.name || "No Name"}
-📦 Qty: ${totalQty} pcs`
-          );
+📍 Address: ${order.shipmentAddress || "No address"}
+📦 Qty: ${totalQty} pcs
 
-          console.log("📩 Sent:", order.name);
-
-        } catch (e) {
-          console.log("❌ WhatsApp failed:", order.name);
-        }
-
-      } catch (innerErr) {
-        console.log("❌ Order loop error:", innerErr.message);
-      }
+🔗 View Orders:
+https://sales-dashboard-o6n6.onrender.com/`
+      );
     }
 
   } catch (err) {
-    console.log("❌ Main Error:", err.response?.data || err.message);
+    console.log("❌ Error:", err.response?.data || err.message);
   }
 });
 
+// 🌐 EXPRESS SERVER
 const PORT = process.env.PORT || 3000;
 
 app.get("/", (req, res) => {
-  res.send("Bot Running ✅");
+  res.send("WhatsApp Bot Running ✅");
 });
 
 app.listen(PORT, () => {
-  console.log("🌐 Server running on port", PORT);
+  console.log(`🌐 Server running on port ${PORT}`);
 });
+
+console.log("🚀 WhatsApp Bot Running...");
