@@ -34,10 +34,18 @@ async function sendWhatsApp(message) {
 
       console.log("WhatsApp queued:", num, sentMessage.sid);
     } catch (err) {
-      const errorMessage = err.response?.data || err.message;
+      const errorMessage = [
+        err.code ? `code=${err.code}` : "",
+        err.status ? `status=${err.status}` : "",
+        err.message || "",
+        err.moreInfo ? `moreInfo=${err.moreInfo}` : ""
+      ].filter(Boolean).join(" | ");
 
       results.push({
         to: num,
+        code: err.code,
+        status: err.status,
+        moreInfo: err.moreInfo,
         error: errorMessage
       });
 
