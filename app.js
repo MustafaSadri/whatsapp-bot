@@ -1,106 +1,3 @@
-// require("dotenv").config();
-// require("events").EventEmitter.defaultMaxListeners = 50;
-
-// const axios = require("axios");
-// const mongoose = require("mongoose");
-// const cron = require("node-cron");
-// const express = require("express");
-
-// const Order = require("./models/Order");
-// const sendWhatsApp = require("./services/whatsapp");
-
-// const app = express();
-// const TOKEN = process.env.TOKEN;
-
-// // ✅ MongoDB Connect
-// mongoose.connect(process.env.MONGO_URI)
-// .then(() => console.log("✅ MongoDB Connected"))
-// .catch(err => console.log("❌ DB Error:", err));
-
-
-// // 🔥 CRON JOB (every 2 minutes)
-// cron.schedule("*/2 * * * *", async () => {
-//   console.log("⏳ Checking orders...");
-
-//   try {
-//     const res = await axios.get(
-//       "https://api.moysklad.ru/api/remap/1.2/entity/customerorder",
-//       {
-//         headers: { Authorization: `Bearer ${TOKEN}` },
-//         params: {
-//           filter: "state.name=ACCEPTED", // ✅ ONLY ACCEPTED (reduce Twilio usage)
-//           limit: 20,
-//           expand: "agent,state"
-//         }
-//       }
-//     );
-
-//     let orders = res.data.rows;
-
-//     // ✅ Sort latest first
-//     orders.sort((a, b) => new Date(b.moment) - new Date(a.moment));
-
-//     for (let order of orders) {
-
-//       console.log("🔍 Checking:", order.name, order.state?.name);
-
-//       const existing = await Order.findOne({ orderId: order.id });
-
-//       // ❌ Skip if already sent
-//       if (existing) continue;
-
-//       // 🔹 Fetch positions (for quantity)
-//       const posRes = await axios.get(
-//         `https://api.moysklad.ru/api/remap/1.2/entity/customerorder/${order.id}/positions`,
-//         {
-//           headers: { Authorization: `Bearer ${TOKEN}` }
-//         }
-//       );
-
-//       let totalQty = 0;
-//       posRes.data.rows.forEach(item => {
-//         totalQty += item.quantity;
-//       });
-
-//       // 💾 Save to DB (avoid duplicate)
-//       await Order.create({
-//         orderId: order.id,
-//         status: "ACCEPTED"
-//       });
-
-//       // 📩 SEND WHATSAPP
-//       await sendWhatsApp(
-// `✅ Order Accepted
-
-// 📦 Order: ${order.name}
-// 📍 Address: ${order.shipmentAddress || "No address"}
-// 📦 Qty: ${totalQty} pcs
-
-// 🔗 View Orders:
-// https://sales-dashboard-o6n6.onrender.com/`
-//       );
-//     }
-
-//   } catch (err) {
-//     console.log("❌ Error:", err.response?.data || err.message);
-//   }
-// });
-
-
-// // 🌐 EXPRESS SERVER (REQUIRED FOR RENDER)
-// const PORT = process.env.PORT || 3000;
-
-// app.get("/", (req, res) => {
-//   res.send("WhatsApp Bot Running ✅");
-// });
-
-// app.listen(PORT, () => {
-//   console.log(`🌐 Server running on port ${PORT}`);
-// });
-
-// console.log("🚀 WhatsApp Bot Running...");
-
-
 require("dotenv").config();
 require("events").EventEmitter.defaultMaxListeners = 50;
 
@@ -114,21 +11,102 @@ const sendWhatsApp = require("./services/whatsapp");
 
 const app = express();
 const TOKEN = process.env.TOKEN;
+const MOYSKLAD_ORDER_URL = "https://api.moysklad.ru/api/remap/1.2/entity/customerorder";
 
-// ✅ MongoDB Connect
 mongoose.connect(process.env.MONGO_URI)
-.then(() => console.log("✅ MongoDB Connected"))
-.catch(err => console.log("❌ DB Error:", err));
+  .then(() => console.log("MongoDB Connected"))
+  .catch(err => console.log("DB Error:", err));
 
-// 🔥 CRON JOB (every 2 minutes)
-cron.schedule("*/2 * * * *", async () => {
-  console.log("⏳ Checking orders...");
+function buildOrderMessage(orderDoc) {
+  return `Order Received
+
+Order No: ${orderDoc.orderNo}
+Customer: ${orderDoc.customerName}
+Phone: ${orderDoc.customerPhone || "No phone"}
+Address: ${orderDoc.address}
+Qty: ${orderDoc.quantity} pcs
+
+View Orders:
+https://sales-dashboard-o6n6.onrender.com/`;
+}
+
+async function fetchOrderQuantity(orderId) {
+  const posRes = await axios.get(
+    `${MOYSKLAD_ORDER_URL}/${orderId}/positions`,
+    {
+      headers: {
+        Authorization: `Bearer ${TOKEN}`
+      }
+    }
+  );
+
+  return (posRes.data.rows || []).reduce((total, item) => {
+    return total + Number(item.quantity || 0);
+  }, 0);
+}
+
+async function notifyOrder(orderDoc) {
+  try {
+    const results = await sendWhatsApp(buildOrderMessage(orderDoc));
+    const firstSuccessfulMessage = results.find(result => result.sid);
+
+    orderDoc.whatsappStatus = "sent";
+    orderDoc.whatsappSentAt = new Date();
+    orderDoc.whatsappError = "";
+    orderDoc.whatsappMessageSid = firstSuccessfulMessage?.sid || "";
+    await orderDoc.save();
+
+    console.log("WhatsApp notification sent for order:", orderDoc.orderNo);
+  } catch (err) {
+    orderDoc.whatsappStatus = "failed";
+    orderDoc.whatsappError = err.message;
+    await orderDoc.save();
+
+    console.log("WhatsApp notification failed for order:", orderDoc.orderNo, err.message);
+  }
+}
+
+async function saveOrUpdateOrder(order, totalQuantity) {
+  const orderNo = order.name || "";
+  const customerName = order.agent?.name || "No Name";
+  const customerPhone = order.agent?.phone || "";
+
+  return Order.findOneAndUpdate(
+    { orderId: order.id },
+    {
+      $set: {
+        orderNo,
+        orderName: orderNo,
+        status: order.state?.name || "NEW",
+        customerName,
+        customerPhone,
+        address: order.shipmentAddress || "No address",
+        quantity: totalQuantity,
+        qty: totalQuantity,
+        moment: order.moment
+      },
+      $setOnInsert: {
+        whatsappStatus: "pending"
+      }
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true
+    }
+  );
+}
+
+async function checkOrders() {
+  console.log("Checking orders...");
 
   try {
     const res = await axios.get(
-      "https://api.moysklad.ru/api/remap/1.2/entity/customerorder",
+      MOYSKLAD_ORDER_URL,
       {
-        headers: { Authorization: `Bearer ${TOKEN}` },
+        headers: {
+          Authorization: `Bearer ${TOKEN}`
+        },
         params: {
           filter: "state.name=NEW",
           limit: 20,
@@ -137,71 +115,40 @@ cron.schedule("*/2 * * * *", async () => {
       }
     );
 
-    let orders = res.data.rows || [];
-
-    // ✅ Sort latest first
+    const orders = res.data.rows || [];
     orders.sort((a, b) => new Date(b.moment) - new Date(a.moment));
 
-    for (let order of orders) {
+    for (const order of orders) {
+      console.log("Checking:", order.name, order.state?.name);
 
-      console.log("🔍 Checking:", order.name, order.state?.name);
+      const totalQuantity = await fetchOrderQuantity(order.id);
+      const orderDoc = await saveOrUpdateOrder(order, totalQuantity);
 
-      const existing = await Order.findOne({
-        orderId: order.id,
-        status: "NEW"
-      });
+      if (orderDoc.whatsappStatus === "sent") {
+        continue;
+      }
 
-      // ❌ Skip if already sent
-      if (existing) continue;
-
-      // 🔹 Fetch positions (for quantity)
-      const posRes = await axios.get(
-        `https://api.moysklad.ru/api/remap/1.2/entity/customerorder/${order.id}/positions`,
-        {
-          headers: { Authorization: `Bearer ${TOKEN}` }
-        }
-      );
-
-      let totalQty = 0;
-
-      (posRes.data.rows || []).forEach(item => {
-        totalQty += Number(item.quantity || 0);
-      });
-
-      // 💾 Save to DB
-      await Order.create({
-        orderId: order.id,
-        status: "NEW"
-      });
-
-      // 📩 SEND WHATSAPP
-      await sendWhatsApp(
-`✅ Order Received
-
-📦 Order: ${order.name}
-👤 Customer: ${order.agent?.name || "No Name"}
-📍 Address: ${order.shipmentAddress || "No address"}
-📦 Qty: ${totalQty} pcs
-
-🔗 View Orders:
-https://sales-dashboard-o6n6.onrender.com/`
-      );
+      await notifyOrder(orderDoc);
     }
-
   } catch (err) {
-    console.log("❌ Error:", err.response?.data || err.message);
+    console.log("Order check error:", err.response?.data || err.message);
   }
-});
+}
 
-// 🌐 EXPRESS SERVER
+cron.schedule("*/2 * * * *", checkOrders);
+
 const PORT = process.env.PORT || 3000;
 
 app.get("/", (req, res) => {
-  res.send("WhatsApp Bot Running ✅");
+  res.send("WhatsApp Bot Running");
+});
+
+app.get("/health", (req, res) => {
+  res.json({ ok: true });
 });
 
 app.listen(PORT, () => {
-  console.log(`🌐 Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
 
-console.log("🚀 WhatsApp Bot Running...");
+console.log("WhatsApp Bot Running...");
