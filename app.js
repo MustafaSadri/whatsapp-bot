@@ -108,9 +108,9 @@ async function checkOrders() {
           Authorization: `Bearer ${TOKEN}`
         },
         params: {
-          filter: "state.name=NEW",
+          filter: "state.name=NEW;store.name=yuzhnie Varota",
           limit: 20,
-          expand: "agent,state"
+          expand: "agent,state,store"
         }
       }
     );
@@ -145,6 +145,14 @@ app.get("/", (req, res) => {
 
 app.get("/health", (req, res) => {
   res.json({ ok: true });
+});
+
+app.get("/twiml/voice", (req, res) => {
+  res.type("text/xml");
+  res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial>${process.env.FORWARD_TO}</Dial>
+</Response>`);
 });
 
 app.listen(PORT, () => {
