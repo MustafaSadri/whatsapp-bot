@@ -47,7 +47,7 @@ async function fetchOrderQuantity(orderId) {
 
 async function notifyOrder(orderDoc) {
   try {
-    const results = await sendWhatsApp(buildOrderMessage(orderDoc));
+    const results = await sendWhatsApp(orderDoc);
     const firstSuccessfulMessage = results.find(result => result.sid);
 
     orderDoc.whatsappStatus = "sent";

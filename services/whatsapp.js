@@ -1,12 +1,11 @@
 const twilio = require("twilio");
 
-// Create client only once.
 const client = twilio(
   process.env.TWILIO_SID,
   process.env.TWILIO_AUTH
 );
 
-async function sendWhatsApp(message) {
+async function sendWhatsApp(orderDoc) {
   const numbers = (process.env.WHATSAPP_NUMBERS || "")
     .split(",")
     .map(num => num.trim())
@@ -16,14 +15,28 @@ async function sendWhatsApp(message) {
     throw new Error("WHATSAPP_NUMBERS is empty. Add numbers like whatsapp:+919999999999");
   }
 
+  const from = process.env.TWILIO_WHATSAPP_FROM;
+  const contentSid = process.env.TWILIO_CONTENT_SID;
+
+  const date = orderDoc.moment
+    ? new Date(orderDoc.moment).toLocaleDateString("en-GB")
+    : new Date().toLocaleDateString("en-GB");
+
   const results = [];
 
   for (const num of numbers) {
     try {
       const sentMessage = await client.messages.create({
-        from: "whatsapp:+14155238886",
+        from,
         to: num,
-        body: message
+        contentSid,
+        contentVariables: JSON.stringify({
+          "1": orderDoc.orderNo || "",
+          "2": orderDoc.customerName || "",
+          "3": orderDoc.address || "",
+          "4": String(orderDoc.quantity || 0),
+          "5": date
+        })
       });
 
       results.push({
