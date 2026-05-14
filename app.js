@@ -109,7 +109,8 @@ async function checkOrders() {
         },
         params: {
           filter: "state.name=NEW",
-          limit: 100,
+          limit: 30,
+          order: "moment,desc",
           expand: "agent,state,store"
         }
       }
