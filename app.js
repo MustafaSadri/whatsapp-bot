@@ -108,8 +108,8 @@ async function checkOrders() {
           Authorization: `Bearer ${TOKEN}`
         },
         params: {
-          filter: "state.name=NEW;store.name=yuzhnie Varota",
-          limit: 20,
+          filter: "state.name=NEW",
+          limit: 100,
           expand: "agent,state,store"
         }
       }
@@ -119,7 +119,12 @@ async function checkOrders() {
     orders.sort((a, b) => new Date(b.moment) - new Date(a.moment));
 
     for (const order of orders) {
-      console.log("Checking:", order.name, order.state?.name);
+      const storeName = order.store?.name || "";
+      console.log("Checking:", order.name, order.state?.name, "| Store:", storeName);
+
+      if (storeName !== "yuzhnie Varota") {
+        continue;
+      }
 
       const totalQuantity = await fetchOrderQuantity(order.id);
       const orderDoc = await saveOrUpdateOrder(order, totalQuantity);
