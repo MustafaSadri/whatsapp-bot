@@ -97,26 +97,35 @@ async function saveOrUpdateOrder(order, totalQuantity) {
   );
 }
 
+async function fetchOrders(stateName) {
+  const res = await axios.get(MOYSKLAD_ORDER_URL, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    params: {
+      filter: `state.name=${stateName}`,
+      limit: 50,
+      order: "moment,desc",
+      expand: "agent,state,store"
+    }
+  });
+  return res.data.rows || [];
+}
+
 async function checkOrders() {
   console.log("Checking orders...");
 
   try {
-    const res = await axios.get(
-      MOYSKLAD_ORDER_URL,
-      {
-        headers: {
-          Authorization: `Bearer ${TOKEN}`
-        },
-        params: {
-          filter: "state.name=NEW",
-          limit: 30,
-          order: "moment,desc",
-          expand: "agent,state,store"
-        }
-      }
-    );
+    const [newOrders, acceptedOrders] = await Promise.all([
+      fetchOrders("NEW"),
+      fetchOrders("ACCEPTED")
+    ]);
 
-    const orders = res.data.rows || [];
+    const seen = new Set();
+    const orders = [...newOrders, ...acceptedOrders].filter(o => {
+      if (seen.has(o.id)) return false;
+      seen.add(o.id);
+      return true;
+    });
+
     orders.sort((a, b) => new Date(b.moment) - new Date(a.moment));
 
     for (const order of orders) {
