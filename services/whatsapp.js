@@ -22,6 +22,8 @@ async function sendWhatsApp(orderDoc) {
     ? new Date(orderDoc.moment).toLocaleDateString("en-GB")
     : new Date().toLocaleDateString("en-GB");
 
+  const clean = (val) => String(val || "").replace(/[\n\r\t]+/g, " ").trim() || "-";
+
   const results = [];
 
   for (const num of numbers) {
@@ -31,9 +33,9 @@ async function sendWhatsApp(orderDoc) {
         to: num,
         contentSid,
         contentVariables: JSON.stringify({
-          "1": orderDoc.orderNo || "",
-          "2": orderDoc.customerName || "",
-          "3": orderDoc.address || "",
+          "1": clean(orderDoc.orderNo),
+          "2": clean(orderDoc.customerName),
+          "3": clean(orderDoc.address),
           "4": String(orderDoc.quantity || 0),
           "5": date
         })
