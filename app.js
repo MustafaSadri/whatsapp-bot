@@ -136,6 +136,8 @@ async function checkOrders() {
         continue;
       }
 
+      await new Promise(r => setTimeout(r, 500));
+
       const totalQuantity = await fetchOrderQuantity(order.id);
       const orderDoc = await saveOrUpdateOrder(order, totalQuantity);
 
